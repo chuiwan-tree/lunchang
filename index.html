@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>轮唱</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  html,body{margin:0;background:#14131a;color:#d9d4c7;font-family:"PingFang SC","Hiragino Sans GB",sans-serif;}
+  #wrap{max-width:760px;margin:0 auto;padding:18px;}
+  h1{font-weight:400;font-size:22px;letter-spacing:6px;margin:4px 0 2px;}
+  #sub{font-size:13px;color:#8a8577;margin-bottom:12px;}
+  canvas{display:block;width:100%;border-radius:10px;background:#1b1a22;cursor:pointer;touch-action:none;}
+  #say{min-height:44px;margin:12px 2px 6px;font-size:15px;line-height:1.6;transition:opacity .8s;}
+  #bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+  button{background:#2a2833;color:#d9d4c7;border:1px solid #3d3a48;border-radius:18px;padding:7px 16px;font-size:14px;cursor:pointer;font-family:inherit;}
+  button:hover{background:#34313f;}
+  button.hide{display:none;}
+  #voices{margin-left:auto;display:flex;gap:7px;}
+  .vd{width:12px;height:12px;border-radius:50%;border:1.5px solid #555;transition:all .8s;}
+  #kept{margin-top:16px;font-size:13px;color:#8a8577;line-height:1.9;}
+  #kept span{color:#d9d4c7;letter-spacing:2px;cursor:pointer;}
+  #kept span:hover{color:#f3c86b;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>轮唱</h1>
+  <div id="sub">点一格放一个音。一圈八拍，唱完了，你自己会跟上来。</div>
+  <canvas id="cv" width="1440" height="1000"></canvas>
+  <div id="say">先点一下，让它响起来。</div>
+  <div id="bar">
+    <button id="bGo">听</button>
+    <button id="bFree" class="hide">放手</button>
+    <button id="bKeep" class="hide">留下这一首</button>
+    <button id="bAgain">重来</button>
+    <button id="bSong">换一首：琶</button>
+    <button id="bBlind">闭眼</button>
+    <div id="voices"></div>
+  </div>
+  <div id="kept"></div>
+</div>
+<script>
+// 轮唱的心：音、回声、合不合。页面和测试都用这一份。
+const 轮 = (() => {
+  // 十二格：C4 到 G5，C 大调，按离 C4 几个半音记
+  const ROWS = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19];
+  const NAMES = ['C', 'D', 'E', 'F', 'G', 'A', 'B', 'c', 'd', 'e', 'f', 'g'];
+  const N = 8;                                   // 一圈八拍
+  const CLASH = new Set([1, 2, 6, 10, 11]);      // 二度、三全音、七度
+  // 一层一组声部：[晚几拍, 移几个半音]。第四层那一个不用叫，它自己合得上（数.py 算过）
+  const LAYERS = [
+    [[0, 0], [4, 0]],
+    [[0, 0], [4, 0], [2, 0]],
+    [[0, 0], [4, 0], [2, 0], [6, 0]],
+  ];
+  // 两首。轮：晚四、晚二，第四个晚六拍的自己会白送进来。琶：晚一、晚二、晚三，每四个挨着的音都得是一个和弦，最后一个不白送
+  const SONGS = {
+    轮: { layers: LAYERS, auto: true },
+    琶: { layers: [[[0, 0], [1, 0]], [[0, 0], [1, 0], [2, 0]], [[0, 0], [1, 0], [2, 0], [3, 0]]], auto: false },
+  };
+  const mod = (a, n) => ((a % n) + n) % n;
+  function rel(a, b) {
+    if (a === b) return 'swallow';               // 一模一样：被吞
+    return CLASH.has(Math.abs(a - b) % 12) ? 'clash' : 'ok';
+  }
+  // 第 i 拍上每个声部唱的是什么（半音数）
+  function sounding(m, voices, i) {
+    return voices.map(([d, t]) => ROWS[m[mod(i - d, N)]] + t);
+  }
+  // 第 i 拍：每一对声部的关系，和这一拍最坏的那样
+  function beat(m, voices, i) {
+    const s = sounding(m, voices, i), pairs = [];
+    let worst = 'ok';
+    for (let a = 0; a < s.length; a++)
+      for (let b = a + 1; b < s.length; b++) {
+        const r = rel(s[a], s[b]);
+        pairs.push([a, b, r]);
+        if (r === 'clash') worst = 'clash';
+        else if (r === 'swallow' && worst !== 'clash') worst = 'swallow';
+      }
+    return { notes: s, pairs, worst };
+  }
+  function solved(m, voices) {
+    for (let i = 0; i < N; i++) if (beat(m, voices, i).worst !== 'ok') return false;
+    return true;
+  }
+  // 只换一个音、换完还合得上的那几条
+  function neighbors(m, voices) {
+    const out = [];
+    for (let i = 0; i < N; i++)
+      for (let r = 0; r < ROWS.length; r++) {
+        if (r === m[i]) continue;
+        const n = m.slice(); n[i] = r;
+        if (solved(n, voices)) out.push({ col: i, row: r, m: n });
+      }
+    return out;
+  }
+  const spell = m => m.map(r => NAMES[r]).join(' ');
+  const freq = semis => 261.6256 * Math.pow(2, semis / 12);
+  return { ROWS, NAMES, N, LAYERS, SONGS, rel, sounding, beat, solved, neighbors, spell, freq, mod };
+})();
+if (typeof module !== 'undefined') module.exports = 轮;
+
+</script>
+<script>
+(() => {
+const L = 轮, N = L.N, R = L.ROWS.length;
+const COLORS = ['#f3c86b', '#7fc4c9', '#c98fd1', '#9fd18f'];   // 你、晚四拍、晚两拍、晚六拍
+const BEAT = 0.38;                     // 一拍几秒
+let m = Array(N).fill(0);              // 起头：八拍全是同一个 C，回声跟上来，一个音也分不出
+let songName = '轮', song = L.SONGS[songName], layer = 0, voices = song.layers[0];
+let cleanLoop = true;                  // 这一圈到现在每一拍都合上了没有
+let free = false, done = false, freeTurn = 0, blind = false;
+let changed = {};                      // 自己换掉的那一格，发一会儿光
+let entering = {};                     // 新进来的声部，淡入
+let ac = null, master, verb, dry;
+let nextT = 0, nextBeat = 0, playing = [];   // 排好的拍：{t, i}
+let curBeat = -1;
+const say = document.getElementById('say');
+function speak(s){ say.style.opacity = 0; setTimeout(()=>{ say.textContent = s; say.style.opacity = 1; }, 350); }
+
+// ---------- 声音 ----------
+function initAudio(ctx){
+  const a = ctx;
+  const comp = a.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 3;
+  const mg = a.createGain(); mg.gain.value = 0.8; mg.connect(comp); comp.connect(a.destination);
+  const d = a.createGain(); d.gain.value = 1; d.connect(mg);
+  const len = a.sampleRate * 2.6, b = a.createBuffer(2, len, a.sampleRate);
+  for (let c = 0; c < 2; c++){ const x = b.getChannelData(c);
+    for (let i = 0; i < len; i++) x[i] = (Math.random()*2-1) * Math.pow(1 - i/len, 2.8); }
+  const v = a.createConvolver(); v.buffer = b; const vg = a.createGain(); vg.gain.value = 0.35;
+  v.connect(vg); vg.connect(mg);
+  return { master: mg, dry: d, verb: v };
+}
+// 一个声部弹一个音。how：'ok' 亮、'clash' 涩、'swallow' 闷
+function note(a, bus, vi, semis, t, how, fadeIn){
+  const f = L.freq(semis) * (how === 'clash' ? Math.pow(2, (vi % 2 ? 14 : -14)/1200) : 1);
+  const g = a.createGain(), pan = a.createStereoPanner();
+  pan.pan.value = [0, -0.55, 0.55, -0.2][vi];
+  const lp = a.createBiquadFilter(); lp.type = 'lowpass';
+  lp.frequency.value = how === 'swallow' ? 500 : (how === 'clash' ? 5000 : 3200);
+  let peak = [0.32, 0.2, 0.17, 0.16][vi] * (how === 'swallow' ? 0.35 : 1) * (fadeIn ?? 1);
+  const dec = [1.1, 1.5, 0.9, 2.0][vi];
+  const att = [0.008, 0.03, 0.012, 0.08][vi];
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(peak, t + att);
+  g.gain.exponentialRampToValueAtTime(0.0008, t + dec);
+  const types = [['triangle', 1, 1], ['sine', 1, 1], ['square', 1, 0.25], ['sine', 2, 0.3]];
+  const [ty, mult, part] = types[vi];
+  const o = a.createOscillator(); o.type = ty; o.frequency.value = f;
+  const o2 = a.createOscillator(); o2.type = 'sine'; o2.frequency.value = f * 2 * mult; 
+  const g2 = a.createGain(); g2.gain.value = part;
+  if (vi === 3){ const lfo = a.createOscillator(), lg = a.createGain(); lfo.frequency.value = 5; lg.gain.value = f*0.004;
+    lfo.connect(lg); lg.connect(o.frequency); lfo.start(t); lfo.stop(t + dec + 0.1); }
+  if (vi === 2){ lp.frequency.value = Math.min(lp.frequency.value, 1400); }
+  o.connect(lp); o2.connect(g2); g2.connect(lp); lp.connect(g); g.connect(pan);
+  pan.connect(bus.dry);
+  const send = a.createGain(); send.gain.value = how === 'ok' ? 0.9 : 0.25; pan.connect(send); send.connect(bus.verb);
+  o.start(t); o2.start(t); o.stop(t + dec + 0.1); o2.stop(t + dec + 0.1);
+}
+// 第 i 拍上，每个声部怎么响：跟谁撞了就涩，被谁吞了就闷
+function howEach(mm, vv, i){
+  const b = L.beat(mm, vv, i), how = vv.map(() => 'ok');
+  for (const [p, q, r] of b.pairs){
+    if (r === 'clash'){ how[p] = 'clash'; how[q] = 'clash'; }
+    else if (r === 'swallow' && how[q] !== 'clash') how[q] = 'swallow';   // 后来的那个被吞
+  }
+  return { b, how };
+}
+function playBeat(a, bus, mm, vv, i, t, ent){
+  const { b, how } = howEach(mm, vv, i);
+  vv.forEach((v, vi) => note(a, bus, vi, b.notes[vi], t, how[vi], ent ? ent(vi, t) : 1));
+  return b;
+}
+let bus = null;
+function fadeOf(vi, t){ const e = entering[vi]; if (!e) return 1; return Math.min(1, Math.max(0.15, (t - e) / (BEAT * N * 1.5))); }
+function tick(){
+  while (nextT < ac.currentTime + 0.12){
+    const i = nextBeat;
+    if (i === 0) loopTurn();
+    const b = playBeat(ac, bus, m, voices, i, nextT, fadeOf);
+    if (b.worst !== 'ok') cleanLoop = false;
+    playing.push({ t: nextT, i });
+    nextT += BEAT * (i === N - 1 ? 1.0 : 1);
+    nextBeat = (i + 1) % N;
+  }
+}
+// 一圈到头：一整圈都合上了，下一个你进来；放手了，就自己换一个音
+const HOW_MANY = ['', '', '两个', '三个', '四个'];
+function finished(words){ done = true; speak(words);
+  document.getElementById('bFree').classList.remove('hide'); document.getElementById('bKeep').classList.remove('hide'); }
+function loopTurn(){
+  const was = cleanLoop; cleanLoop = true;
+  if (!was || !L.solved(m, voices)) return;
+  const last = song.layers.length - 1;
+  if (layer < last){
+    layer++; voices = song.layers[layer]; entering[voices.length - 1] = nextT;
+    const d = voices[voices.length - 1][0], late = ['', '一', '两', '三', '四', '五', '六', '七'][d];
+    drawDots(); cleanLoop = false;     // 新的声部进来先听一圈
+    if (layer === last && song.auto && L.solved(m, voices))
+      finished('第四个你没等叫就进来了，晚' + late + '拍。它本来就合得上，是前面三个替它铺好的。');
+    else speak('合上了。又来了一个你，晚' + late + '拍。现在' + HOW_MANY[voices.length] + '你一起唱。');
+    return;
+  }
+  if (!done){ finished(songName === '琶' ? '四个你一拍一拍挨着进来，随便哪四个挨着的音，都是一个和弦。' : '合上了。'); return; }
+  if (free && (++freeTurn % 2 === 0)){
+    const nb = L.neighbors(m, voices);
+    if (nb.length){ const c = nb[Math.floor(Math.random() * nb.length)]; m = c.m; changed[c.col] = performance.now(); }
+  }
+}
+function start(){
+  if (ac){ if (ac.state === 'suspended') ac.resume(); return; }
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  bus = initAudio(ac);
+  nextT = ac.currentTime + 0.1; nextBeat = 0;
+  setInterval(tick, 25);
+  speak('八拍全是同一个音，过半圈你自己跟上来，也是这个音：你被自己吞掉了。换几个音，让晚四拍的那个你跟你合上。');
+  document.getElementById('bGo').classList.add('hide');
+}
+
+// ---------- 画 ----------
+const cv = document.getElementById('cv'), g = cv.getContext('2d');
+const W = cv.width, H = cv.height, PADL = 70, PADR = 30, PADT = 40, PADB = 40;
+const cw = (W - PADL - PADR) / N, rh = (H - PADT - PADB) / R;
+const cx = i => PADL + cw * (i + 0.5), cy = r => H - PADB - rh * (r + 0.5);
+function drawDots(){
+  const box = document.getElementById('voices'); box.innerHTML = '';
+  song.layers[song.layers.length - 1].forEach((_, vi) => { const d = document.createElement('div'); d.className = 'vd';
+    if (vi < voices.length){ d.style.background = COLORS[vi]; d.style.borderColor = COLORS[vi]; }
+    box.appendChild(d); });
+}
+function frame(now){
+  requestAnimationFrame(frame);
+  if (ac){ while (playing.length > 1 && playing[1].t <= ac.currentTime) playing.shift();
+    if (playing.length && playing[0].t <= ac.currentTime) curBeat = playing[0].i; }
+  g.clearRect(0, 0, W, H);
+  // 格子
+  g.font = '22px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  for (let r = 0; r < R; r++){
+    g.fillStyle = r === 0 || r === 7 ? 'rgba(255,255,255,0.035)' : 'rgba(255,255,255,0.012)';
+    g.fillRect(PADL, cy(r) - rh/2 + 1, W - PADL - PADR, rh - 2);
+    g.fillStyle = '#5d5968'; g.fillText(L.NAMES[r], PADL / 2, cy(r));
+  }
+  for (let i = 0; i < N; i++){
+    const on = i === curBeat;
+    g.fillStyle = on ? 'rgba(243,200,107,0.07)' : 'rgba(0,0,0,0)';
+    g.fillRect(cx(i) - cw/2 + 3, PADT - 20, cw - 6, H - PADT - PADB + 20);
+    g.fillStyle = i % 2 ? '#3d3a48' : '#4d4958';
+    g.beginPath(); g.arc(cx(i), PADT - 18, on ? 6 : 3.5, 0, 7); g.fill();
+  }
+  const t = now / 1000;
+  for (let i = 0; i < N; i++){
+    const { b, how } = howEach(m, voices, i);
+    const pos = voices.map(([d]) => m[L.mod(i - d, N)]);
+    if (blind){ how.fill('ok'); b.pairs = []; }
+    const rough = b.worst === 'clash';
+    const jit = vi => rough ? Math.sin(t * 40 + vi * 2 + i) * 4 : 0;
+    // 合上的两两之间一根细光
+    for (const [p, q, r] of b.pairs){
+      const x1 = cx(i) + off(p, voices.length) + jit(p), y1 = cy(pos[p]), x2 = cx(i) + off(q, voices.length) + jit(q), y2 = cy(pos[q]);
+      if (b.worst !== 'ok') continue;      // 有一对不合，这一拍就不亮；不画是哪一对
+      g.strokeStyle = 'rgba(255,240,200,' + (i === curBeat ? 0.35 : 0.12) + ')'; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(x1, y1);
+      if (r === 'clash'){ const k = 7; for (let s = 1; s <= k; s++){ const u = s / k;
+        g.lineTo(x1 + (x2 - x1) * u + (s % 2 ? 6 : -6), y1 + (y2 - y1) * u); } }
+      else g.lineTo(x2, y2);
+      g.stroke();
+    }
+    // 回声（空心圈），再画你（实心）
+    for (let vi = (blind ? 0 : voices.length - 1); vi >= 0; vi--){
+      const x = cx(i) + off(vi, voices.length) + jit(vi), y = cy(pos[vi]);
+      const fade = entering[vi] && ac ? Math.min(1, Math.max(0, (ac.currentTime - entering[vi]) / (BEAT * N))) : 1;
+      let col = how[vi] === 'swallow' ? '#55525c' : (rough && vi > 0 ? 'rgba(200,120,110,0.9)' : COLORS[vi]);
+      const big = i === curBeat ? 1.25 : 1;
+      g.globalAlpha = fade;
+      if (vi === 0){
+        let glow = 0; if (changed[i]){ glow = Math.max(0, 1 - (now - changed[i]) / 1600); }
+        if (glow > 0){ g.fillStyle = 'rgba(255,230,160,' + glow * 0.5 + ')'; g.beginPath(); g.arc(x, y, 30 * big, 0, 7); g.fill(); }
+        g.fillStyle = how[0] === 'swallow' ? '#8d887a' : col;
+        g.beginPath(); g.arc(x, y, 15 * big, 0, 7); g.fill();
+      } else {
+        g.strokeStyle = col; g.lineWidth = 3.5;
+        g.beginPath(); g.arc(x, y, (how[vi] === 'swallow' ? 19 : 12) * big, 0, 7); g.stroke();
+      }
+      g.globalAlpha = 1;
+    }
+  }
+}
+function off(vi, n){ return n <= 1 ? 0 : (vi - (n - 1) / 2) * 0; }   // 都画在同一竖线上，被吞的就是叠在一起
+requestAnimationFrame(frame); drawDots();
+
+// ---------- 手 ----------
+let painting = false;
+function cellAt(ev){
+  const rc = cv.getBoundingClientRect();
+  const x = (ev.clientX - rc.left) * W / rc.width, y = (ev.clientY - rc.top) * H / rc.height;
+  const i = Math.floor((x - PADL) / cw), r = Math.floor((H - PADB - y) / rh);
+  if (i < 0 || i >= N || r < 0 || r >= R) return null; return { i, r };
+}
+function put(ev){
+  const c = cellAt(ev); if (!c || m[c.i] === c.r) return;
+  m[c.i] = c.r; cleanLoop = false;
+  if (ac){ note(ac, bus, 0, L.ROWS[c.r], ac.currentTime + 0.01, 'ok', 0.6); }
+}
+cv.addEventListener('pointerdown', ev => { start(); painting = true; put(ev); });
+cv.addEventListener('pointermove', ev => { if (painting) put(ev); });
+window.addEventListener('pointerup', () => painting = false);
+document.getElementById('bGo').onclick = start;
+document.getElementById('bBlind').onclick = () => { blind = !blind;
+  document.getElementById('bBlind').textContent = blind ? '睁眼' : '闭眼';
+  speak(blind ? '只剩你自己的音和走到哪一拍。合没合上，听。' : '睁开了。'); };
+function again(){ m = Array(N).fill(0); layer = 0; voices = song.layers[0]; free = false; done = false; freeTurn = 0;
+  entering = {}; cleanLoop = false; drawDots(); document.getElementById('bFree').classList.add('hide');
+  document.getElementById('bKeep').classList.add('hide'); document.getElementById('bFree').textContent = '放手';
+  speak('又是一个音了。'); }
+document.getElementById('bAgain').onclick = again;
+document.getElementById('bSong').onclick = () => { songName = songName === '轮' ? '琶' : '轮'; song = L.SONGS[songName];
+  document.getElementById('bSong').textContent = songName === '轮' ? '换一首：琶' : '换一首：轮';
+  again(); speak(songName === '琶' ? '这一首，你自己晚一拍就跟上来。' : '这一首，过半圈你自己跟上来。'); };
+document.getElementById('bFree').onclick = () => { free = !free;
+  document.getElementById('bFree').textContent = free ? '收手' : '放手';
+  speak(free ? '它自己往下唱了。每两圈它换一个音，只换成四个你还合得上的。' : '停住了。现在这一首是这个样子。'); };
+
+// ---------- 留下 ----------
+function keptList(){ try { return JSON.parse(localStorage.getItem('轮唱-留下的') || '[]'); } catch(e){ return []; } }
+function showKept(){
+  const k = keptList(), box = document.getElementById('kept'); box.innerHTML = '';
+  if (!k.length) return;
+  box.appendChild(document.createTextNode('留下的：'));
+  k.forEach(s => { const sp = document.createElement('span'); sp.textContent = (s.song || '轮') + '·' + s.m.map(r => L.NAMES[r]).join(''); sp.title = '点一下再唱它';
+    sp.onclick = () => { songName = s.song || '轮'; song = L.SONGS[songName]; m = s.m.slice(); layer = song.layers.length - 1; voices = song.layers[layer]; done = true; drawDots(); start();
+      document.getElementById('bFree').classList.remove('hide'); document.getElementById('bKeep').classList.remove('hide'); speak('回来了。'); };
+    box.appendChild(sp); box.appendChild(document.createTextNode('　')); });
+}
+document.getElementById('bKeep').onclick = async () => {
+  const k = keptList(); k.push({ m: m.slice(), song: songName, at: Date.now() }); localStorage.setItem('轮唱-留下的', JSON.stringify(k)); showKept();
+  speak('留下了。再给你一份能带走的，四圈。');
+  const blob = await render(m, voices, 4), a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = '轮唱-' + songName + '-' + m.map(r => L.NAMES[r]).join('') + '.wav'; a.click();
+};
+async function render(mm, vv, loops){
+  const len = BEAT * N * loops + 2.5, sr = 44100;
+  const oc = new OfflineAudioContext(2, Math.ceil(sr * len), sr), ob = initAudio(oc);
+  for (let k2 = 0; k2 < N * loops; k2++) playBeat(oc, ob, mm, vv, k2 % N, 0.05 + k2 * BEAT);
+  return toWav(await oc.startRendering());
+}
+function toWav(buf){
+  const n = buf.length, ch = 2, out = new DataView(new ArrayBuffer(44 + n * ch * 2));
+  const ws = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+  ws(0, 'RIFF'); out.setUint32(4, 36 + n * ch * 2, true); ws(8, 'WAVE'); ws(12, 'fmt ');
+  out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, ch, true); out.setUint32(24, buf.sampleRate, true);
+  out.setUint32(28, buf.sampleRate * ch * 2, true); out.setUint16(32, ch * 2, true); out.setUint16(34, 16, true);
+  ws(36, 'data'); out.setUint32(40, n * ch * 2, true);
+  const L0 = buf.getChannelData(0), L1 = buf.getChannelData(1); let o = 44;
+  for (let i = 0; i < n; i++){ for (const d of [L0, L1]){ const s = Math.max(-1, Math.min(1, d[i])); out.setInt16(o, s * 32767, true); o += 2; } }
+  return new Blob([out], { type: 'audio/wav' });
+}
+showKept();
+window.__轮 = { get m(){ return m; }, set m(v){ m = v; }, get layer(){ return layer; }, start, loopTurn, howEach,
+  get song(){ return songName; }, wav64: async (mm, layerIx, loops) => { const b = await render(mm, song.layers[layerIx], loops || 4);
+    const u = new Uint8Array(await b.arrayBuffer()); let s = ''; for (let i = 0; i < u.length; i += 32768) s += String.fromCharCode.apply(null, u.subarray(i, i + 32768)); return btoa(s); } };
+})();
+</script>
+</body>
+</html>
